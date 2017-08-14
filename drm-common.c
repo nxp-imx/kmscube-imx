@@ -76,6 +76,12 @@ struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 		printf("Using modifier %llx\n", modifiers[0]);
 	}
 
+    if(modifiers[0] == DRM_FORMAT_MOD_VIVANTE_SUPER_TILED) {
+        if(width%64 || height%64) {
+            fprintf(stderr, "For DRM_FORMAT_MOD_VIVANTE_SUPER_TILED width and height of the surface should be aligned to 64 pixels\n");
+		}
+    }
+
 	ret = drmModeAddFB2WithModifiers(drm_fd, width, height,
 			DRM_FORMAT_XRGB8888, handles, strides, offsets,
 			modifiers, &fb->fb_id, flags);
