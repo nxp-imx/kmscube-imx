@@ -31,7 +31,7 @@
 #include "common.h"
 #include "esUtil.h"
 
-struct {
+struct gl {
 	struct egl egl;
 
 	GLfloat aspect;
@@ -49,9 +49,7 @@ struct {
 	struct decoder *decoder;
 	int filenames_count, idx;
 	const char *filenames[32];
-} gl;
-
-static const struct egl *egl = &gl.egl;
+};
 
 static const GLfloat vVertices[] = {
 		// front
@@ -218,25 +216,27 @@ static const char *fragment_shader_source =
 		"}                                  \n";
 
 
-static void draw_cube_video(unsigned i)
+static void draw_cube_video(struct egl *egl, unsigned i)
 {
 	ESMatrix modelview;
 	EGLImage frame;
 
-	frame = video_frame(gl.decoder);
+	struct gl *gl = (struct gl *) egl;
+
+	frame = video_frame(gl->decoder);
 	if (!frame) {
 		/* end of stream */
-		glDeleteTextures(1, &gl.tex);
-		glGenTextures(1, &gl.tex);
-		video_deinit(gl.decoder);
-		gl.idx = (gl.idx + 1) % gl.filenames_count;
-		gl.decoder = video_init(&gl.egl, gl.gbm, gl.filenames[gl.idx]);
+		glDeleteTextures(1, &gl->tex);
+		glGenTextures(1, &gl->tex);
+		video_deinit(gl->decoder);
+		gl->idx = (gl->idx + 1) % gl->filenames_count;
+		gl->decoder = video_init(&gl->egl, gl->gbm, gl->filenames[gl->idx]);
 	}
 
-	glUseProgram(gl.blit_program);
+	glUseProgram(gl->blit_program);
 
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl.tex);
+	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl->tex);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -247,11 +247,11 @@ static void draw_cube_video(unsigned i)
 	glClearColor(0.5, 0.5, 0.5, 1.0);
 	glClear(GL_COLOR_BUFFER_BIT);
 
-	glUseProgram(gl.blit_program);
-	glUniform1i(gl.blit_texture, 0); /* '0' refers to texture unit 0. */
+	glUseProgram(gl->blit_program);
+	glUniform1i(gl->blit_texture, 0); /* '0' refers to texture unit 0. */
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-	glUseProgram(gl.program);
+	glUseProgram(gl->program);
 
 	esMatrixLoadIdentity(&modelview);
 	esTranslate(&modelview, 0.0f, 0.0f, -8.0f);
@@ -261,7 +261,7 @@ static void draw_cube_video(unsigned i)
 
 	ESMatrix projection;
 	esMatrixLoadIdentity(&projection);
-	esFrustum(&projection, -2.1f, +2.1f, -2.1f * gl.aspect, +2.1f * gl.aspect, 6.0f, 10.0f);
+	esFrustum(&projection, -2.1f, +2.1f, -2.1f * gl->aspect, +2.1f * gl->aspect, 6.0f, 10.0f);
 
 	ESMatrix modelviewprojection;
 	esMatrixLoadIdentity(&modelviewprojection);
@@ -278,10 +278,10 @@ static void draw_cube_video(unsigned i)
 	normal[7] = modelview.m[2][1];
 	normal[8] = modelview.m[2][2];
 
-	glUniformMatrix4fv(gl.modelviewmatrix, 1, GL_FALSE, &modelview.m[0][0]);
-	glUniformMatrix4fv(gl.modelviewprojectionmatrix, 1, GL_FALSE, &modelviewprojection.m[0][0]);
-	glUniformMatrix3fv(gl.normalmatrix, 1, GL_FALSE, normal);
-	glUniform1i(gl.texture, 0); /* '0' refers to texture unit 0. */
+	glUniformMatrix4fv(gl->modelviewmatrix, 1, GL_FALSE, &modelview.m[0][0]);
+	glUniformMatrix4fv(gl->modelviewprojectionmatrix, 1, GL_FALSE, &modelviewprojection.m[0][0]);
+	glUniformMatrix3fv(gl->normalmatrix, 1, GL_FALSE, normal);
+	glUniform1i(gl->texture, 0); /* '0' refers to texture unit 0. */
 
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	glDrawArrays(GL_TRIANGLE_STRIP, 4, 4);
@@ -291,96 +291,98 @@ static void draw_cube_video(unsigned i)
 	glDrawArrays(GL_TRIANGLE_STRIP, 20, 4);
 }
 
-const struct egl * init_cube_video(const struct gbm *gbm, const char *filenames)
+struct egl * init_cube_video(const struct gbm *gbm, const char *filenames)
 {
 	char *fnames, *s;
 	int ret, i = 0;
 
-	ret = init_egl(&gl.egl, gbm);
+	struct gl *gl = calloc(1, sizeof(*gl));
+
+	ret = init_egl(&gl->egl, gbm);
 	if (ret)
 		return NULL;
 
-	if (!gl.egl.eglCreateImageKHR) {
+	if (!gl->egl.eglCreateImageKHR) {
 		printf("no eglCreateImageKHR\n");
 		return NULL;
 	}
 
 	fnames = strdup(filenames);
 	while ((s = strstr(fnames, ","))) {
-		gl.filenames[i] = fnames;
+		gl->filenames[i] = fnames;
 		s[0] = '\0';
 		fnames = &s[1];
 		i++;
 	}
-	gl.filenames[i] = fnames;
-	gl.filenames_count = ++i;
+	gl->filenames[i] = fnames;
+	gl->filenames_count = ++i;
 
-	gl.decoder = video_init(&gl.egl, gbm, gl.filenames[gl.idx]);
-	if (!gl.decoder) {
+	gl->decoder = video_init(&gl->egl, gbm, gl->filenames[gl->idx]);
+	if (!gl->decoder) {
 		printf("cannot create video decoder\n");
 		return NULL;
 	}
 
-	gl.aspect = (GLfloat)(gbm->height) / (GLfloat)(gbm->width);
-	gl.gbm = gbm;
+	gl->aspect = (GLfloat)(gbm->height) / (GLfloat)(gbm->width);
+	gl->gbm = gbm;
 
 	ret = create_program(blit_vs, blit_fs);
 	if (ret < 0)
 		return NULL;
 
-	gl.blit_program = ret;
+	gl->blit_program = ret;
 
-	glBindAttribLocation(gl.blit_program, 0, "in_position");
-	glBindAttribLocation(gl.blit_program, 1, "in_TexCoord");
+	glBindAttribLocation(gl->blit_program, 0, "in_position");
+	glBindAttribLocation(gl->blit_program, 1, "in_TexCoord");
 
-	ret = link_program(gl.blit_program);
+	ret = link_program(gl->blit_program);
 	if (ret)
 		return NULL;
 
-	gl.blit_texture = glGetUniformLocation(gl.blit_program, "uTex");
+	gl->blit_texture = glGetUniformLocation(gl->blit_program, "uTex");
 
 	ret = create_program(vertex_shader_source, fragment_shader_source);
 	if (ret < 0)
 		return NULL;
 
-	gl.program = ret;
+	gl->program = ret;
 
-	glBindAttribLocation(gl.program, 0, "in_position");
-	glBindAttribLocation(gl.program, 1, "in_TexCoord");
-	glBindAttribLocation(gl.program, 2, "in_normal");
+	glBindAttribLocation(gl->program, 0, "in_position");
+	glBindAttribLocation(gl->program, 1, "in_TexCoord");
+	glBindAttribLocation(gl->program, 2, "in_normal");
 
-	ret = link_program(gl.program);
+	ret = link_program(gl->program);
 	if (ret)
 		return NULL;
 
-	gl.modelviewmatrix = glGetUniformLocation(gl.program, "modelviewMatrix");
-	gl.modelviewprojectionmatrix = glGetUniformLocation(gl.program, "modelviewprojectionMatrix");
-	gl.normalmatrix = glGetUniformLocation(gl.program, "normalMatrix");
-	gl.texture   = glGetUniformLocation(gl.program, "uTex");
+	gl->modelviewmatrix = glGetUniformLocation(gl->program, "modelviewMatrix");
+	gl->modelviewprojectionmatrix = glGetUniformLocation(gl->program, "modelviewprojectionMatrix");
+	gl->normalmatrix = glGetUniformLocation(gl->program, "normalMatrix");
+	gl->texture   = glGetUniformLocation(gl->program, "uTex");
 
 	glViewport(0, 0, gbm->width, gbm->height);
 	glEnable(GL_CULL_FACE);
 
-	gl.positionsoffset = 0;
-	gl.texcoordsoffset = sizeof(vVertices);
-	gl.normalsoffset = sizeof(vVertices) + sizeof(vTexCoords);
+	gl->positionsoffset = 0;
+	gl->texcoordsoffset = sizeof(vVertices);
+	gl->normalsoffset = sizeof(vVertices) + sizeof(vTexCoords);
 
-	glGenBuffers(1, &gl.vbo);
-	glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
+	glGenBuffers(1, &gl->vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, gl->vbo);
 	glBufferData(GL_ARRAY_BUFFER, sizeof(vVertices) + sizeof(vTexCoords) + sizeof(vNormals), 0, GL_STATIC_DRAW);
-	glBufferSubData(GL_ARRAY_BUFFER, gl.positionsoffset, sizeof(vVertices), &vVertices[0]);
-	glBufferSubData(GL_ARRAY_BUFFER, gl.texcoordsoffset, sizeof(vTexCoords), &vTexCoords[0]);
-	glBufferSubData(GL_ARRAY_BUFFER, gl.normalsoffset, sizeof(vNormals), &vNormals[0]);
-	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl.positionsoffset);
+	glBufferSubData(GL_ARRAY_BUFFER, gl->positionsoffset, sizeof(vVertices), &vVertices[0]);
+	glBufferSubData(GL_ARRAY_BUFFER, gl->texcoordsoffset, sizeof(vTexCoords), &vTexCoords[0]);
+	glBufferSubData(GL_ARRAY_BUFFER, gl->normalsoffset, sizeof(vNormals), &vNormals[0]);
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl->positionsoffset);
 	glEnableVertexAttribArray(0);
-	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl.texcoordsoffset);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl->texcoordsoffset);
 	glEnableVertexAttribArray(1);
-	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl.normalsoffset);
+	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl->normalsoffset);
 	glEnableVertexAttribArray(2);
 
-	glGenTextures(1, &gl.tex);
+	glGenTextures(1, &gl->tex);
 
-	gl.egl.draw = draw_cube_video;
+	gl->egl.draw = draw_cube_video;
 
-	return &gl.egl;
+	return &gl->egl;
 }

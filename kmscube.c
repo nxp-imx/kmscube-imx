@@ -23,11 +23,14 @@
  */
 
 /* Based on a egl cube test app originally written by Arvin Schnell */
-
+#define _GNU_SOURCE
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <getopt.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <time.h>
 
 #include "common.h"
 #include "drm-common.h"
@@ -39,11 +42,20 @@ GST_DEBUG_CATEGORY(kmscube_debug);
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
-static const struct egl *egl;
-static const struct gbm *gbm;
-static const struct drm *drm;
+static const char *device = "/dev/dri/card0";
+static const char *video = NULL;
+static enum mode mode = SMOOTH;
+static uint64_t modifier = DRM_FORMAT_MOD_INVALID;
+static int atomic = 0;
 
-static const char *shortopts = "AD:M:m:V:";
+static const char *shortopts = "AD:M:m:V:l";
+
+struct thread_data {
+	struct drm *drm;
+	enum mode mode;
+	uint64_t modifier;
+	const char *video;
+};
 
 static const struct option longopts[] = {
 	{"atomic", no_argument,       0, 'A'},
@@ -51,6 +63,7 @@ static const struct option longopts[] = {
 	{"mode",   required_argument, 0, 'M'},
 	{"modifier", required_argument, 0, 'm'},
 	{"video",  required_argument, 0, 'V'},
+	{"lease", no_argument, 0, 'l' },
 	{0, 0, 0, 0}
 };
 
@@ -67,17 +80,73 @@ static void usage(const char *name)
 			"        nv12-2img -  yuv textured (color conversion in shader)\n"
 			"        nv12-1img -  yuv textured (single nv12 texture)\n"
 			"    -m, --modifier=MODIFIER  hardcode the selected modifier\n"
-			"    -V, --video=FILE         video textured cube\n",
+			"    -V, --video=FILE         video textured cube\n"
+			"    -l, lease		     Uses DRM leases to display two cubes\n",
 			name);
+}
+
+void
+run(int drm_fd, int leased_fd)
+{
+	struct gbm *gbm;
+	struct drm *drm;
+	struct egl *egl;
+
+	if (atomic)
+		drm = init_drm_atomic(drm_fd, leased_fd);
+	else
+		drm = init_drm_legacy(drm_fd, leased_fd);
+
+	drm->fd = drm_fd;
+	drm->leased_fd = leased_fd;
+
+	if (!drm) {
+		printf("failed to initialize %s DRM\n", atomic ? "atomic" : "legacy");
+		exit(EXIT_FAILURE);
+	}
+
+	gbm = init_gbm(drm_fd, drm->mode->hdisplay, drm->mode->vdisplay,
+			modifier);
+	if (!gbm) {
+		printf("failed to initialize GBM\n");
+		return;
+	}
+
+	fprintf(stdout, "gbm @ %p\n", gbm);
+
+	if (mode == SMOOTH)
+		egl = init_cube_smooth(gbm);
+	else if (mode == VIDEO)
+		egl = init_cube_video(gbm, video);
+	else
+		egl = init_cube_tex(gbm, mode);
+
+	if (!egl) {
+		printf("failed to initialize EGL\n");
+		return;
+	}
+
+	/* clear the color buffer */
+	glClearColor(0.5, 0.5, 0.5, 1.0);
+	glClear(GL_COLOR_BUFFER_BIT);
+
+	drm->run(drm, gbm, egl);
+}
+
+static void *
+thread_run(void *arg)
+{
+	int leased_fd = (intptr_t) arg;
+
+	/* passing -1 will not "force" to seek other connector, meaning that we
+	 * can use whatever objects have been leased */
+	run(leased_fd, -1);
+	return NULL;
 }
 
 int main(int argc, char *argv[])
 {
-	const char *device = "/dev/dri/card0";
-	const char *video = NULL;
-	enum mode mode = SMOOTH;
-	uint64_t modifier = DRM_FORMAT_MOD_INVALID;
-	int atomic = 0;
+	int lease = 0;
 	int opt;
 
 #ifdef HAVE_GST
@@ -115,43 +184,54 @@ int main(int argc, char *argv[])
 			mode = VIDEO;
 			video = optarg;
 			break;
+		case 'l':
+			lease = 1;
+			break;
 		default:
 			usage(argv[0]);
 			return -1;
 		}
 	}
 
-	if (atomic)
-		drm = init_drm_atomic(device);
-	else
-		drm = init_drm_legacy(device);
-	if (!drm) {
-		printf("failed to initialize %s DRM\n", atomic ? "atomic" : "legacy");
-		return -1;
+	int leased_fd = -1;
+	int drm_fd = open(device, O_RDWR);
+
+	if (lease) {
+		struct drm_resources drm_resources;
+		uint32_t objects[3];
+		uint32_t lessee_id;
+		pthread_t thread;
+		int i = 0;
+
+		find_drm_resources(&drm_resources, drm_fd, -1);
+
+		if (drm_resources.connector_id) {
+			objects[i++] = drm_resources.connector_id;
+		}
+
+		if (drm_resources.crtc_id) {
+			objects[i++] = drm_resources.crtc_id;
+		}
+
+		/* 
+		 * we create a lease using the connector_id and crtc_id. The
+		 * thread will initialize drm using these values.
+		 */
+		leased_fd = drmModeCreateLease(drm_fd, objects, i, 0, &lessee_id);
+		if (leased_fd < 0) {
+			fprintf(stderr, "Failed to create lease\n");
+			exit(EXIT_FAILURE);
+		}
+
+		pthread_create(&thread, NULL, thread_run, (void *) (intptr_t) leased_fd);
+
+		/* wait until the first one starts */
+		nanosleep(&(struct timespec) { .tv_sec = 1, .tv_nsec = 1024 * 1024 * 10 }, NULL);
 	}
 
-	gbm = init_gbm(drm->fd, drm->mode->hdisplay, drm->mode->vdisplay,
-			modifier);
-	if (!gbm) {
-		printf("failed to initialize GBM\n");
-		return -1;
-	}
 
-	if (mode == SMOOTH)
-		egl = init_cube_smooth(gbm);
-	else if (mode == VIDEO)
-		egl = init_cube_video(gbm, video);
-	else
-		egl = init_cube_tex(gbm, mode);
-
-	if (!egl) {
-		printf("failed to initialize EGL\n");
-		return -1;
-	}
-
-	/* clear the color buffer */
-	glClearColor(0.5, 0.5, 0.5, 1.0);
-	glClear(GL_COLOR_BUFFER_BIT);
-
-	return drm->run(gbm, egl);
+	/* we know have drm_fd and leased_fd. When we're going to initalize the
+	 * drm system we'll choose the other connector available */
+	run(drm_fd, leased_fd);
+	return 0;
 }

@@ -29,8 +29,6 @@
 
 #include "common.h"
 
-static struct gbm gbm;
-
 #ifdef HAVE_GBM_MODIFIERS
 static int
 get_modifiers(uint64_t **mods)
@@ -42,19 +40,22 @@ get_modifiers(uint64_t **mods)
 }
 #endif
 
-const struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier)
+struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier)
 {
-	gbm.dev = gbm_create_device(drm_fd);
+	struct gbm *gbm = calloc(1, sizeof(*gbm));
+
+	gbm->dev = gbm_create_device(drm_fd);
 
 #ifndef HAVE_GBM_MODIFIERS
 	if (modifier != DRM_FORMAT_MOD_INVALID) {
 		fprintf(stderr, "Modifiers requested but support isn't available\n");
 		return NULL;
 	}
-	gbm.surface = gbm_surface_create(gbm.dev, w, h,
+	gbm->surface = gbm_surface_create(gbm->dev, w, h,
 			GBM_FORMAT_XRGB8888,
 			GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
 #else
+	fprintf(stdout, "Modifiers requested\n");
 	uint64_t *mods;
 	int count;
 	if (modifier != DRM_FORMAT_MOD_INVALID) {
@@ -63,19 +64,19 @@ const struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier)
 	} else {
 		count = get_modifiers(&mods);
 	}
-	gbm.surface = gbm_surface_create_with_modifiers(gbm.dev, w, h,
+
+	gbm->surface = gbm_surface_create_with_modifiers(gbm->dev, w, h,
 			GBM_FORMAT_XRGB8888, mods, count);
 #endif
-
-	if (!gbm.surface) {
+	if (!gbm->surface) {
 		printf("failed to create gbm surface\n");
 		return NULL;
 	}
 
-	gbm.width = w;
-	gbm.height = h;
+	gbm->width = w;
+	gbm->height = h;
 
-	return &gbm;
+	return gbm;
 }
 
 int init_egl(struct egl *egl, const struct gbm *gbm)

@@ -20,16 +20,18 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
-
+#define _GNU_SOURCE
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/select.h>
+#include <assert.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <syscall.h>
 
 #include "common.h"
 #include "drm-common.h"
-
-static struct drm drm;
 
 static void page_flip_handler(int fd, unsigned int frame,
 		  unsigned int sec, unsigned int usec, void *data)
@@ -41,7 +43,7 @@ static void page_flip_handler(int fd, unsigned int frame,
 	*waiting_for_flip = 0;
 }
 
-static int legacy_run(const struct gbm *gbm, const struct egl *egl)
+int legacy_run(struct drm *drm, const struct gbm *gbm, struct egl *egl)
 {
 	fd_set fds;
 	drmEventContext evctx = {
@@ -55,10 +57,15 @@ static int legacy_run(const struct gbm *gbm, const struct egl *egl)
 
 	FD_ZERO(&fds);
 	FD_SET(0, &fds);
-	FD_SET(drm.fd, &fds);
+	FD_SET(drm->fd, &fds);
 
 	eglSwapBuffers(egl->display, egl->surface);
 	bo = gbm_surface_lock_front_buffer(gbm->surface);
+	if (!bo) {
+		fprintf(stderr, "Failed to lock front buffer %ld\n", syscall(SYS_gettid));
+		return -1;
+	}
+
 	fb = drm_fb_get_from_bo(bo);
 	if (!fb) {
 		fprintf(stderr, "Failed to get a new framebuffer BO\n");
@@ -66,8 +73,8 @@ static int legacy_run(const struct gbm *gbm, const struct egl *egl)
 	}
 
 	/* set mode: */
-	ret = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0,
-			&drm.connector_id, 1, drm.mode);
+	ret = drmModeSetCrtc(drm->fd, drm->crtc_id, fb->fb_id, 0, 0,
+			&drm->connector_id, 1, drm->mode);
 	if (ret) {
 		printf("failed to set mode: %s\n", strerror(errno));
 		return ret;
@@ -77,7 +84,7 @@ static int legacy_run(const struct gbm *gbm, const struct egl *egl)
 		struct gbm_bo *next_bo;
 		int waiting_for_flip = 1;
 
-		egl->draw(i++);
+		egl->draw(egl, i++);
 
 		eglSwapBuffers(egl->display, egl->surface);
 		next_bo = gbm_surface_lock_front_buffer(gbm->surface);
@@ -92,7 +99,7 @@ static int legacy_run(const struct gbm *gbm, const struct egl *egl)
 		 * hw composition
 		 */
 
-		ret = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
+		ret = drmModePageFlip(drm->fd, drm->crtc_id, fb->fb_id,
 				DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip);
 		if (ret) {
 			printf("failed to queue page flip: %s\n", strerror(errno));
@@ -100,7 +107,7 @@ static int legacy_run(const struct gbm *gbm, const struct egl *egl)
 		}
 
 		while (waiting_for_flip) {
-			ret = select(drm.fd + 1, &fds, NULL, NULL, NULL);
+			ret = select(drm->fd + 1, &fds, NULL, NULL, NULL);
 			if (ret < 0) {
 				printf("select err: %s\n", strerror(errno));
 				return ret;
@@ -111,7 +118,7 @@ static int legacy_run(const struct gbm *gbm, const struct egl *egl)
 				printf("user interrupted!\n");
 				break;
 			}
-			drmHandleEvent(drm.fd, &evctx);
+			drmHandleEvent(drm->fd, &evctx);
 		}
 
 		/* release last buffer to render on again: */
@@ -122,15 +129,16 @@ static int legacy_run(const struct gbm *gbm, const struct egl *egl)
 	return 0;
 }
 
-const struct drm * init_drm_legacy(const char *device)
+struct drm * init_drm_legacy(int fd, int leased_fd)
 {
 	int ret;
+	struct drm *drm = calloc(1, sizeof(*drm));
 
-	ret = init_drm(&drm, device);
+	ret = init_drm(drm, fd, leased_fd);
 	if (ret)
 		return NULL;
 
-	drm.run = legacy_run;
+	drm->run = legacy_run;
 
-	return &drm;
+	return drm;
 }

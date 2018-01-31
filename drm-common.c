@@ -30,6 +30,27 @@
 #include "common.h"
 #include "drm-common.h"
 
+static int leased(int fd, int nfd, int id)
+{
+	if (fd != nfd && nfd != -1) {
+		drmModeObjectListPtr lease = drmModeGetLease(nfd);
+		int ret = 0;
+
+		if (lease) {
+			uint32_t u;
+			for (u = 0; u < lease->count; u++)
+				if (lease->objects[u] == (uint32_t) id) {
+					ret = 1;
+					break;
+				}
+			free(lease);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 static void
 drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 {
@@ -73,14 +94,14 @@ struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 
 	if (modifiers[0]) {
 		flags = DRM_MODE_FB_MODIFIERS;
-		printf("Using modifier %llx\n", modifiers[0]);
+		printf("Using modifier %lx\n", modifiers[0]);
 	}
 
-    if(modifiers[0] == DRM_FORMAT_MOD_VIVANTE_SUPER_TILED) {
-        if(width%64 || height%64) {
-            fprintf(stderr, "For DRM_FORMAT_MOD_VIVANTE_SUPER_TILED width and height of the surface should be aligned to 64 pixels\n");
+	if(modifiers[0] == DRM_FORMAT_MOD_VIVANTE_SUPER_TILED) {
+		if(width%64 || height%64) {
+			fprintf(stderr, "For DRM_FORMAT_MOD_VIVANTE_SUPER_TILED width and height of the surface should be aligned to 64 pixels\n");
 		}
-    }
+	}
 
 	ret = drmModeAddFB2WithModifiers(drm_fd, width, height,
 			DRM_FORMAT_XRGB8888, handles, strides, offsets,
@@ -127,15 +148,15 @@ static uint32_t find_crtc_for_encoder(const drmModeRes *resources,
 	return -1;
 }
 
-static uint32_t find_crtc_for_connector(const struct drm *drm, const drmModeRes *resources,
+static uint32_t find_crtc_for_connector(int drm_fd, int leased_fd, const drmModeRes *resources,
 		const drmModeConnector *connector) {
 	int i;
 
 	for (i = 0; i < connector->count_encoders; i++) {
 		const uint32_t encoder_id = connector->encoders[i];
-		drmModeEncoder *encoder = drmModeGetEncoder(drm->fd, encoder_id);
+		drmModeEncoder *encoder = drmModeGetEncoder(drm_fd, encoder_id);
 
-		if (encoder) {
+		if (encoder && !leased(drm_fd, leased_fd, encoder->encoder_id)) {
 			const uint32_t crtc_id = find_crtc_for_encoder(resources, encoder);
 
 			drmModeFreeEncoder(encoder);
@@ -149,21 +170,20 @@ static uint32_t find_crtc_for_connector(const struct drm *drm, const drmModeRes 
 	return -1;
 }
 
-int init_drm(struct drm *drm, const char *device)
+
+int init_drm(struct drm *drm, int drm_fd, int leased_fd)
 {
 	drmModeRes *resources;
 	drmModeConnector *connector = NULL;
 	drmModeEncoder *encoder = NULL;
 	int i, area;
 
-	drm->fd = open(device, O_RDWR);
-
-	if (drm->fd < 0) {
+	if (drm_fd < 0) {
 		printf("could not open drm device\n");
 		return -1;
 	}
 
-	resources = drmModeGetResources(drm->fd);
+	resources = drmModeGetResources(drm_fd);
 	if (!resources) {
 		printf("drmModeGetResources failed: %s\n", strerror(errno));
 		return -1;
@@ -171,8 +191,10 @@ int init_drm(struct drm *drm, const char *device)
 
 	/* find a connected connector: */
 	for (i = 0; i < resources->count_connectors; i++) {
-		connector = drmModeGetConnector(drm->fd, resources->connectors[i]);
-		if (connector->connection == DRM_MODE_CONNECTED) {
+		connector = drmModeGetConnector(drm_fd, resources->connectors[i]);
+
+		if (connector->connection == DRM_MODE_CONNECTED && 
+		    !leased(drm_fd, leased_fd, connector->connector_id)) {
 			/* it's connected, let's use this! */
 			break;
 		}
@@ -210,7 +232,7 @@ int init_drm(struct drm *drm, const char *device)
 
 	/* find encoder: */
 	for (i = 0; i < resources->count_encoders; i++) {
-		encoder = drmModeGetEncoder(drm->fd, resources->encoders[i]);
+		encoder = drmModeGetEncoder(drm_fd, resources->encoders[i]);
 		if (encoder->encoder_id == connector->encoder_id)
 			break;
 		drmModeFreeEncoder(encoder);
@@ -220,7 +242,7 @@ int init_drm(struct drm *drm, const char *device)
 	if (encoder) {
 		drm->crtc_id = encoder->crtc_id;
 	} else {
-		uint32_t crtc_id = find_crtc_for_connector(drm, resources, connector);
+		uint32_t crtc_id = find_crtc_for_connector(drm_fd, leased_fd, resources, connector);
 		if (crtc_id == 0) {
 			printf("no crtc found!\n");
 			return -1;
@@ -239,6 +261,79 @@ int init_drm(struct drm *drm, const char *device)
 	drmModeFreeResources(resources);
 
 	drm->connector_id = connector->connector_id;
+
+	return 0;
+}
+
+int find_drm_resources(struct drm_resources *drm_resources, int fd, int nfd)
+{
+	drmModeRes *resources;
+	drmModeConnector *connector = NULL;
+	drmModeEncoder *encoder = NULL;
+	int i;
+
+	resources = drmModeGetResources(fd);
+	if (!resources) {
+		printf("drmModeGetResources failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	/* find a connected connector: */
+	for (i = 0; i < resources->count_connectors; i++) {
+		connector = drmModeGetConnector(fd, resources->connectors[i]);
+		if (connector->connection == DRM_MODE_CONNECTED && !leased(fd, nfd, connector->connector_id)) {
+			/* it's connected, let's use this! */
+			drm_resources->connector_id = connector->connector_id;
+			break;
+		}
+		drmModeFreeConnector(connector);
+		connector = NULL;
+	}
+
+	if (!connector) {
+		/* we could be fancy and listen for hotplug events and wait for
+		 * a connector..
+		 */
+		printf("no connected connector!\n");
+		return -1;
+	}
+
+	/* find encoder: */
+	for (i = 0; i < resources->count_encoders; i++) {
+		encoder = drmModeGetEncoder(fd, resources->encoders[i]);
+		if (encoder->encoder_id == connector->encoder_id && !leased(fd, nfd, encoder->encoder_id))
+			break;
+		drmModeFreeEncoder(encoder);
+		encoder = NULL;
+	}
+
+	if (encoder) {
+		drm_resources->encoder_id = encoder->encoder_id;
+		drm_resources->crtc_id = encoder->crtc_id;
+	} else {
+		uint32_t crtc_id;
+		for (i = 0; i < connector->count_encoders; i++) {
+			const uint32_t encoder_id = connector->encoders[i];
+			drmModeEncoder *encoder = drmModeGetEncoder(fd, encoder_id);
+
+			if (encoder && !leased(fd, nfd, encoder->encoder_id)) {
+				crtc_id = find_crtc_for_encoder(resources, encoder);
+
+				if (crtc_id != 0)
+					break;
+				drmModeFreeEncoder(encoder);
+			}
+		}
+
+		if (crtc_id == 0) {
+			printf("no crtc found!\n");
+			return -1;
+		}
+
+		drm_resources->crtc_id = crtc_id;
+	}
+
+	drmModeFreeResources(resources);
 
 	return 0;
 }

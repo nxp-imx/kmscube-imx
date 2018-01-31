@@ -30,7 +30,7 @@
 #include "esUtil.h"
 
 
-struct {
+struct gl {
 	struct egl egl;
 
 	GLfloat aspect;
@@ -44,9 +44,7 @@ struct {
 	GLuint vbo;
 	GLuint positionsoffset, texcoordsoffset, normalsoffset;
 	GLuint tex[2];
-} gl;
-
-const struct egl *egl = &gl.egl;
+};
 
 static const GLfloat vVertices[] = {
 		// front
@@ -213,7 +211,7 @@ static const char *fragment_shader_source_2img =
 
 static const uint32_t texw = 512, texh = 512;
 
-static int get_fd_rgba(uint32_t *pstride)
+static int get_fd_rgba(struct gl *gl, uint32_t *pstride)
 {
 	struct gbm_bo *bo;
 	void *map_data = NULL;
@@ -223,7 +221,7 @@ static int get_fd_rgba(uint32_t *pstride)
 	int fd;
 
 	/* NOTE: do not actually use GBM_BO_USE_WRITE since that gets us a dumb buffer: */
-	bo = gbm_bo_create(gl.gbm->dev, texw, texh, GBM_FORMAT_ABGR8888, GBM_BO_USE_LINEAR);
+	bo = gbm_bo_create(gl->gbm->dev, texw, texh, GBM_FORMAT_ABGR8888, GBM_BO_USE_LINEAR);
 
 	map = gbm_bo_map(bo, 0, 0, texw, texh, GBM_BO_TRANSFER_WRITE, &stride, &map_data);
 
@@ -243,7 +241,7 @@ static int get_fd_rgba(uint32_t *pstride)
 	return fd;
 }
 
-static int get_fd_y(uint32_t *pstride)
+static int get_fd_y(struct gl *gl, uint32_t *pstride)
 {
 	struct gbm_bo *bo;
 	void *map_data = NULL;
@@ -253,7 +251,7 @@ static int get_fd_y(uint32_t *pstride)
 	int fd;
 
 	/* NOTE: do not actually use GBM_BO_USE_WRITE since that gets us a dumb buffer: */
-	bo = gbm_bo_create(gl.gbm->dev, texw, texh, GBM_FORMAT_R8, GBM_BO_USE_LINEAR);
+	bo = gbm_bo_create(gl->gbm->dev, texw, texh, GBM_FORMAT_R8, GBM_BO_USE_LINEAR);
 
 	map = gbm_bo_map(bo, 0, 0, texw, texh, GBM_BO_TRANSFER_WRITE, &stride, &map_data);
 
@@ -273,7 +271,7 @@ static int get_fd_y(uint32_t *pstride)
 	return fd;
 }
 
-static int get_fd_uv(uint32_t *pstride)
+static int get_fd_uv(struct gl *gl, uint32_t *pstride)
 {
 	struct gbm_bo *bo;
 	void *map_data = NULL;
@@ -283,7 +281,7 @@ static int get_fd_uv(uint32_t *pstride)
 	int fd;
 
 	/* NOTE: do not actually use GBM_BO_USE_WRITE since that gets us a dumb buffer: */
-	bo = gbm_bo_create(gl.gbm->dev, texw/2, texh/2, GBM_FORMAT_GR88, GBM_BO_USE_LINEAR);
+	bo = gbm_bo_create(gl->gbm->dev, texw/2, texh/2, GBM_FORMAT_GR88, GBM_BO_USE_LINEAR);
 
 	map = gbm_bo_map(bo, 0, 0, texw/2, texh/2, GBM_BO_TRANSFER_WRITE, &stride, &map_data);
 
@@ -303,10 +301,12 @@ static int get_fd_uv(uint32_t *pstride)
 	return fd;
 }
 
-static int init_tex_rgba(void)
+static int init_tex_rgba(struct gl *gl)
 {
+	struct egl *egl = &gl->egl;
+
 	uint32_t stride;
-	int fd = get_fd_rgba(&stride);
+	int fd = get_fd_rgba(gl, &stride);
 	const EGLint attr[] = {
 		EGL_WIDTH, texw,
 		EGL_HEIGHT, texh,
@@ -318,13 +318,13 @@ static int init_tex_rgba(void)
 	};
 	EGLImage img;
 
-	glGenTextures(1, gl.tex);
+	glGenTextures(1, gl->tex);
 
 	img = egl->eglCreateImageKHR(egl->display, EGL_NO_CONTEXT,
 			EGL_LINUX_DMA_BUF_EXT, NULL, attr);
 	assert(img);
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl.tex[0]);
+	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl->tex[0]);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -336,11 +336,12 @@ static int init_tex_rgba(void)
 	return 0;
 }
 
-static int init_tex_nv12_2img(void)
+static int init_tex_nv12_2img(struct gl *gl)
 {
+	struct egl *egl = &gl->egl;
 	uint32_t stride_y, stride_uv;
-	int fd_y = get_fd_y(&stride_y);
-	int fd_uv = get_fd_uv(&stride_uv);
+	int fd_y = get_fd_y(gl, &stride_y);
+	int fd_uv = get_fd_uv(gl, &stride_uv);
 	const EGLint attr_y[] = {
 		EGL_WIDTH, texw,
 		EGL_HEIGHT, texh,
@@ -361,14 +362,14 @@ static int init_tex_nv12_2img(void)
 	};
 	EGLImage img_y, img_uv;
 
-	glGenTextures(2, gl.tex);
+	glGenTextures(2, gl->tex);
 
 	/* Y plane texture: */
 	img_y = egl->eglCreateImageKHR(egl->display, EGL_NO_CONTEXT,
 			EGL_LINUX_DMA_BUF_EXT, NULL, attr_y);
 	assert(img_y);
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl.tex[0]);
+	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl->tex[0]);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -382,7 +383,7 @@ static int init_tex_nv12_2img(void)
 			EGL_LINUX_DMA_BUF_EXT, NULL, attr_uv);
 	assert(img_uv);
 	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl.tex[1]);
+	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl->tex[1]);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -394,11 +395,12 @@ static int init_tex_nv12_2img(void)
 	return 0;
 }
 
-static int init_tex_nv12_1img(void)
+static int init_tex_nv12_1img(struct gl *gl)
 {
+	struct egl *egl = &gl->egl;
 	uint32_t stride_y, stride_uv;
-	int fd_y = get_fd_y(&stride_y);
-	int fd_uv = get_fd_uv(&stride_uv);
+	int fd_y = get_fd_y(gl, &stride_y);
+	int fd_uv = get_fd_uv(gl, &stride_uv);
 	const EGLint attr[] = {
 		EGL_WIDTH, texw,
 		EGL_HEIGHT, texh,
@@ -413,13 +415,13 @@ static int init_tex_nv12_1img(void)
 	};
 	EGLImage img;
 
-	glGenTextures(1, gl.tex);
+	glGenTextures(1, gl->tex);
 
 	img = egl->eglCreateImageKHR(egl->display, EGL_NO_CONTEXT,
 			EGL_LINUX_DMA_BUF_EXT, NULL, attr);
 	assert(img);
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl.tex[0]);
+	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl->tex[0]);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -431,15 +433,15 @@ static int init_tex_nv12_1img(void)
 	return 0;
 }
 
-static int init_tex(enum mode mode)
+static int init_tex(struct gl *gl, enum mode mode)
 {
 	switch (mode) {
 	case RGBA:
-		return init_tex_rgba();
+		return init_tex_rgba(gl);
 	case NV12_2IMG:
-		return init_tex_nv12_2img();
+		return init_tex_nv12_2img(gl);
 	case NV12_1IMG:
-		return init_tex_nv12_1img();
+		return init_tex_nv12_1img(gl);
 	case SMOOTH:
 	case VIDEO:
 		assert(!"unreachable");
@@ -448,8 +450,9 @@ static int init_tex(enum mode mode)
 	return -1;
 }
 
-static void draw_cube_tex(unsigned i)
+static void draw_cube_tex(struct egl *egl, unsigned i)
 {
+	struct gl *gl = (struct gl *) egl;
 	ESMatrix modelview;
 
 	/* clear the color buffer */
@@ -464,7 +467,7 @@ static void draw_cube_tex(unsigned i)
 
 	ESMatrix projection;
 	esMatrixLoadIdentity(&projection);
-	esFrustum(&projection, -2.8f, +2.8f, -2.8f * gl.aspect, +2.8f * gl.aspect, 6.0f, 10.0f);
+	esFrustum(&projection, -2.8f, +2.8f, -2.8f * gl->aspect, +2.8f * gl->aspect, 6.0f, 10.0f);
 
 	ESMatrix modelviewprojection;
 	esMatrixLoadIdentity(&modelviewprojection);
@@ -481,13 +484,13 @@ static void draw_cube_tex(unsigned i)
 	normal[7] = modelview.m[2][1];
 	normal[8] = modelview.m[2][2];
 
-	glUniformMatrix4fv(gl.modelviewmatrix, 1, GL_FALSE, &modelview.m[0][0]);
-	glUniformMatrix4fv(gl.modelviewprojectionmatrix, 1, GL_FALSE, &modelviewprojection.m[0][0]);
-	glUniformMatrix3fv(gl.normalmatrix, 1, GL_FALSE, normal);
-	glUniform1i(gl.texture, 0); /* '0' refers to texture unit 0. */
+	glUniformMatrix4fv(gl->modelviewmatrix, 1, GL_FALSE, &modelview.m[0][0]);
+	glUniformMatrix4fv(gl->modelviewprojectionmatrix, 1, GL_FALSE, &modelviewprojection.m[0][0]);
+	glUniformMatrix3fv(gl->normalmatrix, 1, GL_FALSE, normal);
+	glUniform1i(gl->texture, 0); /* '0' refers to texture unit 0. */
 
-	if (gl.mode == NV12_2IMG)
-		glUniform1i(gl.textureuv, 1);
+	if (gl->mode == NV12_2IMG)
+		glUniform1i(gl->textureuv, 1);
 
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	glDrawArrays(GL_TRIANGLE_STRIP, 4, 4);
@@ -497,78 +500,80 @@ static void draw_cube_tex(unsigned i)
 	glDrawArrays(GL_TRIANGLE_STRIP, 20, 4);
 }
 
-const struct egl * init_cube_tex(const struct gbm *gbm, enum mode mode)
+struct egl * init_cube_tex(const struct gbm *gbm, enum mode mode)
 {
 	const char *fragment_shader_source = (mode == NV12_2IMG) ?
 			fragment_shader_source_2img : fragment_shader_source_1img;
+
+	struct gl *gl = calloc(1, sizeof(*gl));
 	int ret;
 
-	ret = init_egl(&gl.egl, gbm);
+	ret = init_egl(&gl->egl, gbm);
 	if (ret)
 		return NULL;
 
-	if (!gl.egl.eglCreateImageKHR) {
+	if (!gl->egl.eglCreateImageKHR) {
 		printf("no eglCreateImageKHR\n");
 		return NULL;
 	}
 
-	gl.aspect = (GLfloat)(gbm->height) / (GLfloat)(gbm->width);
-	gl.mode = mode;
-	gl.gbm = gbm;
+	gl->aspect = (GLfloat)(gbm->height) / (GLfloat)(gbm->width);
+	gl->mode = mode;
+	gl->gbm = gbm;
 
 	ret = create_program(vertex_shader_source, fragment_shader_source);
 	if (ret < 0)
 		return NULL;
 
-	gl.program = ret;
+	gl->program = ret;
 
-	glBindAttribLocation(gl.program, 0, "in_position");
-	glBindAttribLocation(gl.program, 1, "in_normal");
-	glBindAttribLocation(gl.program, 2, "in_color");
+	glBindAttribLocation(gl->program, 0, "in_position");
+	glBindAttribLocation(gl->program, 1, "in_normal");
+	glBindAttribLocation(gl->program, 2, "in_color");
 
-	ret = link_program(gl.program);
+	ret = link_program(gl->program);
 	if (ret)
 		return NULL;
 
-	glUseProgram(gl.program);
+	glUseProgram(gl->program);
 
-	gl.modelviewmatrix = glGetUniformLocation(gl.program, "modelviewMatrix");
-	gl.modelviewprojectionmatrix = glGetUniformLocation(gl.program, "modelviewprojectionMatrix");
-	gl.normalmatrix = glGetUniformLocation(gl.program, "normalMatrix");
+	gl->modelviewmatrix = glGetUniformLocation(gl->program, "modelviewMatrix");
+	gl->modelviewprojectionmatrix = glGetUniformLocation(gl->program, "modelviewprojectionMatrix");
+	gl->normalmatrix = glGetUniformLocation(gl->program, "normalMatrix");
 	if (mode == NV12_2IMG) {
-		gl.texture   = glGetUniformLocation(gl.program, "uTexY");
-		gl.textureuv = glGetUniformLocation(gl.program, "uTexUV");
+		gl->texture   = glGetUniformLocation(gl->program, "uTexY");
+		gl->textureuv = glGetUniformLocation(gl->program, "uTexUV");
 	} else {
-		gl.texture   = glGetUniformLocation(gl.program, "uTex");
+		gl->texture   = glGetUniformLocation(gl->program, "uTex");
 	}
 
 	glViewport(0, 0, gbm->width, gbm->height);
 	glEnable(GL_CULL_FACE);
 
-	gl.positionsoffset = 0;
-	gl.texcoordsoffset = sizeof(vVertices);
-	gl.normalsoffset = sizeof(vVertices) + sizeof(vTexCoords);
+	gl->positionsoffset = 0;
+	gl->texcoordsoffset = sizeof(vVertices);
+	gl->normalsoffset = sizeof(vVertices) + sizeof(vTexCoords);
 
-	glGenBuffers(1, &gl.vbo);
-	glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
+	glGenBuffers(1, &gl->vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, gl->vbo);
 	glBufferData(GL_ARRAY_BUFFER, sizeof(vVertices) + sizeof(vTexCoords) + sizeof(vNormals), 0, GL_STATIC_DRAW);
-	glBufferSubData(GL_ARRAY_BUFFER, gl.positionsoffset, sizeof(vVertices), &vVertices[0]);
-	glBufferSubData(GL_ARRAY_BUFFER, gl.texcoordsoffset, sizeof(vTexCoords), &vTexCoords[0]);
-	glBufferSubData(GL_ARRAY_BUFFER, gl.normalsoffset, sizeof(vNormals), &vNormals[0]);
-	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl.positionsoffset);
+	glBufferSubData(GL_ARRAY_BUFFER, gl->positionsoffset, sizeof(vVertices), &vVertices[0]);
+	glBufferSubData(GL_ARRAY_BUFFER, gl->texcoordsoffset, sizeof(vTexCoords), &vTexCoords[0]);
+	glBufferSubData(GL_ARRAY_BUFFER, gl->normalsoffset, sizeof(vNormals), &vNormals[0]);
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl->positionsoffset);
 	glEnableVertexAttribArray(0);
-	glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl.normalsoffset);
+	glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl->normalsoffset);
 	glEnableVertexAttribArray(1);
-	glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl.texcoordsoffset);
+	glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 0, (const GLvoid *)(intptr_t)gl->texcoordsoffset);
 	glEnableVertexAttribArray(2);
 
-	ret = init_tex(mode);
+	ret = init_tex(gl, mode);
 	if (ret) {
 		printf("failed to initialize EGLImage texture\n");
 		return NULL;
 	}
 
-	gl.egl.draw = draw_cube_tex;
+	gl->egl.draw = draw_cube_tex;
 
-	return &gl.egl;
+	return &gl->egl;
 }

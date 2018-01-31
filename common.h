@@ -63,7 +63,7 @@ struct gbm {
 	int width, height;
 };
 
-const struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier);
+struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier);
 
 
 struct egl {
@@ -81,7 +81,7 @@ struct egl {
 	PFNEGLWAITSYNCKHRPROC eglWaitSyncKHR;
 	PFNEGLDUPNATIVEFENCEFDANDROIDPROC eglDupNativeFenceFDANDROID;
 
-	void (*draw)(unsigned i);
+	void (*draw)(struct egl *gl, unsigned i);
 };
 
 int init_egl(struct egl *egl, const struct gbm *gbm);
@@ -96,8 +96,8 @@ enum mode {
 	VIDEO,         /* video textured cube */
 };
 
-const struct egl * init_cube_smooth(const struct gbm *gbm);
-const struct egl * init_cube_tex(const struct gbm *gbm, enum mode mode);
+struct egl * init_cube_smooth(const struct gbm *gbm);
+struct egl * init_cube_tex(const struct gbm *gbm, enum mode mode);
 
 #ifdef HAVE_GST
 
@@ -106,10 +106,10 @@ struct decoder * video_init(const struct egl *egl, const struct gbm *gbm, const 
 EGLImage video_frame(struct decoder *dec);
 void video_deinit(struct decoder *dec);
 
-const struct egl * init_cube_video(const struct gbm *gbm, const char *video);
+struct egl * init_cube_video(const struct gbm *gbm, const char *video);
 
 #else
-static inline const struct egl *
+ inline const struct egl *
 init_cube_video(const struct gbm *gbm, const char *video)
 {
 	(void)gbm; (void)video;
