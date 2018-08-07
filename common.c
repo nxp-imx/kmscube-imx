@@ -110,6 +110,7 @@ int init_egl(struct egl *egl, const struct gbm *gbm)
 	get_proc(eglDestroySyncKHR);
 	get_proc(eglWaitSyncKHR);
 	get_proc(eglDupNativeFenceFDANDROID);
+	get_proc(eglClientWaitSyncKHR);
 
 	if (egl->eglGetPlatformDisplayEXT) {
 		egl->display = egl->eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR,

@@ -171,33 +171,21 @@ static EGLSyncKHR create_fence(const struct egl *egl, int fd)
 
 static int atomic_run(struct drm *drm, const struct gbm *gbm, struct egl *egl)
 {
-	struct gbm_bo *bo;
+	struct gbm_bo *bo = NULL;
 	struct drm_fb *fb;
 	uint32_t i = 0;
+	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
 	int ret;
 
-	if (!egl->eglDupNativeFenceFDANDROID) {
-		printf("no eglDupNativeFenceFDANDROID\n");
+	if (egl_check(egl, eglDupNativeFenceFDANDROID) ||
+	    egl_check(egl, eglCreateSyncKHR) ||
+	    egl_check(egl, eglDestroySyncKHR) ||
+	    egl_check(egl, eglWaitSyncKHR) ||
+	    egl_check(egl, eglClientWaitSyncKHR))
 		return -1;
-	}
 
-	eglSwapBuffers(egl->display, egl->surface);
-	bo = gbm_surface_lock_front_buffer(gbm->surface);
-	fb = drm_fb_get_from_bo(bo);
-	if (!fb) {
-		printf("Failed to get a new framebuffer BO\n");
-		return -1;
-	}
-
-
-	drm->kms_in_fence_fd = -1;
-
-	/* set mode: */
-	ret = drm_atomic_commit(drm, drm->fd, fb->fb_id, DRM_MODE_ATOMIC_ALLOW_MODESET);
-	if (ret) {
-		printf("failed to commit modeset: %s\n", strerror(errno));
-		return ret;
-	}
+	/* Allow a modeset change for the first commit only. */
+	flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
 
 	while (1) {
 		struct gbm_bo *next_bo;
@@ -206,6 +194,7 @@ static int atomic_run(struct drm *drm, const struct gbm *gbm, struct egl *egl)
 
 		if (drm->kms_out_fence_fd != -1) {
 			kms_fence = create_fence(egl, drm->kms_out_fence_fd);
+			assert(kms_fence);
 
 			/* driver now has ownership of the fence fd: */
 			drm->kms_out_fence_fd = -1;
@@ -216,7 +205,6 @@ static int atomic_run(struct drm *drm, const struct gbm *gbm, struct egl *egl)
 			 * the buffer that is still on screen.
 			 */
 			egl->eglWaitSyncKHR(egl->display, kms_fence, 0);
-			egl->eglDestroySyncKHR(egl->display, kms_fence);
 		}
 
 		egl->draw(egl, i++);
@@ -225,6 +213,7 @@ static int atomic_run(struct drm *drm, const struct gbm *gbm, struct egl *egl)
 		 * signaled when gpu rendering done
 		 */
 		gpu_fence = create_fence(egl, EGL_NO_NATIVE_FENCE_FD_ANDROID);
+		assert(gpu_fence);
 
 		eglSwapBuffers(egl->display, egl->surface);
 
@@ -236,25 +225,51 @@ static int atomic_run(struct drm *drm, const struct gbm *gbm, struct egl *egl)
 		assert(drm->kms_in_fence_fd != -1);
 
 		next_bo = gbm_surface_lock_front_buffer(gbm->surface);
+		if (!next_bo) {
+			printf("Failed to lock frontbuffer\n");
+			return -1;
+		}
 		fb = drm_fb_get_from_bo(next_bo);
 		if (!fb) {
 			printf("Failed to get a new framebuffer BO\n");
 			return -1;
 		}
 
+		if (kms_fence) {
+			EGLint status;
+
+			/* Wait on the CPU side for the _previous_ commit to
+			 * complete before we post the flip through KMS, as
+			 * atomic will reject the commit if we post a new one
+			 * whilst the previous one is still pending.
+			 */
+			do {
+				status = egl->eglClientWaitSyncKHR(egl->display,
+						kms_fence,
+						0,
+						EGL_FOREVER_KHR);
+			} while (status != EGL_CONDITION_SATISFIED_KHR);
+
+			egl->eglDestroySyncKHR(egl->display, kms_fence);
+		}
+
 		/*
 		 * Here you could also update drm plane layers if you want
 		 * hw composition
 		 */
-		ret = drm_atomic_commit(drm, drm->fd, fb->fb_id, DRM_MODE_ATOMIC_NONBLOCK);
+		ret = drm_atomic_commit(drm, drm->fd, fb->fb_id, flags);
 		if (ret) {
 			printf("failed to commit: %s\n", strerror(errno));
 			return -1;
 		}
 
 		/* release last buffer to render on again: */
-		gbm_surface_release_buffer(gbm->surface, bo);
+		if (bo)
+			gbm_surface_release_buffer(gbm->surface, bo);
 		bo = next_bo;
+
+		/* Allow a modeset change for the first commit only. */
+		flags &= ~(DRM_MODE_ATOMIC_ALLOW_MODESET);
 	}
 
 	return ret;
@@ -385,6 +400,7 @@ struct drm * init_drm_atomic(int drm_fd, int leased_fd)
 	get_properties(plane, PLANE, plane_id);
 	get_properties(crtc, CRTC, drm->crtc_id);
 	get_properties(connector, CONNECTOR, drm->connector_id);
+	drm->kms_out_fence_fd = -1;
 
 	drm->run = atomic_run;
 
