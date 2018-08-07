@@ -29,6 +29,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <syscall.h>
+#include <stdlib.h>
 
 #include "common.h"
 #include "drm-common.h"
