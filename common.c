@@ -34,7 +34,7 @@ static int
 get_modifiers(uint64_t **mods)
 {
 	/* Assumed LINEAR is supported everywhere */
-	static uint64_t modifiers[] = {DRM_FORMAT_MOD_VIVANTE_SUPER_TILED, DRM_FORMAT_MOD_LINEAR};
+	static uint64_t modifiers[] = {DRM_FORMAT_MOD_LINEAR};
 	*mods = modifiers;
 	return sizeof(modifiers) / sizeof(uint64_t);
 }
